@@ -124,7 +124,7 @@ const DIFFICULTIES={
  nightmare:{name:'ナイトメア',enemyHp:1.85,enemyDamage:1.60,enemyRate:0.70,bossHp:2.30,initialHp:90}
 };
 const SAVE_KEY='maremon-survivors-v29-progress';
-const BUILD_VERSION='v407';
+const BUILD_VERSION='v408';
 function newProgress(){return{kills:0,runs:0,wins:0,normalWins:0,hardWins:0,nightmareWins:0,survivalWins:0,bestLevel:1,maxFollowers:0,boostSuccess:0,eliteKills:0,relics:0,evolutions:0,enemyKills:{},stageEnemyKills:{},patronBoosts:{},achievements:[],clears:{},difficultySelections:{}}}
 function loadProgress(){try{const p=JSON.parse(localStorage.getItem(SAVE_KEY)||'null');return p&&typeof p==='object'?Object.assign(newProgress(),p):newProgress()}catch(e){return newProgress()}}
 let progress=loadProgress(),difficulty='normal';for(const field of ['enemyKills','stageEnemyKills','patronBoosts','difficultySelections','clears'])if(!progress[field]||typeof progress[field]!=='object'||Array.isArray(progress[field]))progress[field]={};
@@ -435,16 +435,79 @@ function roomRewardsOpen(){return gameMode!=='expedition'||regionIndex>=COMBAT_R
 
 
 // Pilot-stage XP: reward location and collection matter. Other stages retain v405 experience rules.
-let ruinsXpDrops=[],ruinsWaveTimer=9,ruinsWaveCount=0;
+let ruinsXpDrops=[],ruinsWaveTimer=7,ruinsWaveCount=0;
+// A short, opt-in tactical arc on the pilot stage: three meaningful picks inside the first 5 minutes.
+const ruinsTactics=[
+ {key:'raider',name:'裂陣の遊撃',detail:n=>`遊撃型の攻撃から最大${1+n*2}体へ追撃斬波。${n>=2?'連撃の間隔が短くなる。':'敵の隊列を崩す。'}`},
+ {key:'guardian',name:'守護の共鳴',detail:n=>`護衛型の攻撃から周囲${120+n*15}pxに衝撃波。敵を鈍らせる。${n>=2?'範囲と威力が強化。':''}`},
+ {key:'hunter',name:'狩猟の弾雨',detail:n=>`追撃型の攻撃から${1+n}発の追尾弾が別の敵へ飛ぶ。${n>=2?'弾の威力と頻度が向上。':''}`}
+];
+const ruinsTacticLevels=[2,5,8];
+let ruinsTacticRanks={raider:0,guardian:0,hunter:0},ruinsTacticChosen=new Set();
+let ruinsTacticClock={raider:0,guardian:0,hunter:0};
+function pilotTacticsActive(){return selectedStage==='ruins'}
+function pilotTacticOffer(){return pilotTacticsActive()&&rewardSource==='level'&&ruinsTacticLevels.includes(level)&&!ruinsTacticChosen.has(level)}
+function pilotTacticSpeed(){return Object.values(ruinsTacticRanks).filter(v=>v>0).length>=2?.85:1}
+function pilotTacticChoice(key){
+ if(!pilotTacticOffer()||game!=='level'||!ruinsTacticRanks.hasOwnProperty(key))return false;
+ const rank=++ruinsTacticRanks[key];ruinsTacticChosen.add(level);
+ ruinsTacticClock[key]=0;
+ playSfx('evolution');emitImageEffect(key==='guardian'?'shub':key==='hunter'?'yog':'slash',player.x,player.y,185,1.0);
+ const theme=ruinsTactics.find(x=>x.key===key);
+ game='play';$('levelpanel').style.display='none';toast(`戦術《${theme.name}》${rank}段階`);updateHud();return true;
+}
+function renderPilotTacticCards(){
+ const cards=$('cards');cards.replaceChildren();
+ $('slotInfo').textContent='無名都市・軍勢戦術の選択　｜　通常スキル枠は消費しません';
+ for(const t of ruinsTactics){
+  const next=ruinsTacticRanks[t.key]+1,b=document.createElement('button');
+  b.type='button';b.className='card '+(t.key==='hunter'?'myth':'');
+  const tag=document.createElement('span');tag.className='tag';tag.textContent=`軍勢戦術 Lv.${next}`;
+  const title=document.createElement('b');title.textContent=t.name;
+  const description=document.createElement('span');description.className='effect-description';description.textContent=t.detail(next);
+  const sub=document.createElement('small');sub.textContent=ruinsTacticRanks[t.key]?'既存戦術をさらに強化':'新しい戦い方を獲得';
+  b.append(tag,title,description,sub);b.onclick=()=>pilotTacticChoice(t.key);cards.append(b);
+ }
+ for(const id of ['reroll','skipReward']){const el=$(id);if(el)el.hidden=true}
+ renderFollowerEvoOffer();
+}
+function tickPilotTactics(dt){if(!pilotTacticsActive())return;for(const k of Object.keys(ruinsTacticClock))ruinsTacticClock[k]=Math.max(0,ruinsTacticClock[k]-dt)}
+function pilotTacticStrike(f,target,dmg){
+ if(!pilotTacticsActive()||!target||boostState==='betray')return;
+ const type=f.role,rank=ruinsTacticRanks[type];if(!rank||ruinsTacticClock[type]>0)return;
+ const second=pilotTacticSpeed();
+ if(type==='raider'){
+  ruinsTacticClock.raider=Math.max(.25,(1.35-rank*.20)*second);
+  let hits=0;for(const e of enemies){if(e===target||e.dead||!onScreen(e)||dist2(e,target)>(112+rank*13)**2)continue;damageEnemy(e,Math.min(11,dmg*.24+rank*1.2),'tactic');if(++hits>=1+rank*2)break}
+  emitImageEffect('slash',target.x,target.y,110+rank*12,.50);
+ }else if(type==='guardian'){
+  ruinsTacticClock.guardian=Math.max(.33,(1.7-rank*.26)*second);
+  const r=120+rank*15;let n=0;
+  for(const e of enemies){if(e.dead||!onScreen(e)||dist2(e,player)>r*r)continue;damageEnemy(e,1.7+rank*1.8,'tactic');e.slow=Math.max(e.slow||0,.65+rank*.1);if(++n>=16+rank*5)break}
+  emitImageEffect('shub',player.x,player.y,r*2,.60);
+ }else if(type==='hunter'){
+  ruinsTacticClock.hunter=Math.max(.28,(1.9-rank*.28)*second);
+  const arr=[];for(const e of enemies){if(e===target||e.dead||!onScreen(e)||dist2(e,f)>335*335)continue;arr.push(e);if(arr.length>=rank+1)break}
+  if(!arr.length&&!target.dead)arr.push(target);
+  for(const e of arr){if(bolts.length>=115)break;const dx=e.x-f.x,dy=e.y-f.y,l=Math.hypot(dx,dy)||1;
+    bolts.push({x:f.x,y:f.y,vx:dx/l*390,vy:dy/l*390,life:1,dmg:2.8+rank*1.6,remaining:1,hitIds:new Set()});}
+  emitImageEffect('yog',target.x,target.y,84,.55);
+ }
+}
+
 function addRuinsXp(x,y,value){
  if(value<=0)return;
- if(ruinsXpDrops.length>=230){const near=ruinsXpDrops[(Math.abs(Math.floor(x+y))%ruinsXpDrops.length)];near.value+=value;return;}
+ if(ruinsXpDrops.length>=240){let best=ruinsXpDrops[0],bestD=Infinity;for(const g of ruinsXpDrops){const d=(g.x-x)**2+(g.y-y)**2;if(d<bestD){bestD=d;best=g}}best.value+=value;best.life=120;return;}
+ // A cluster of defeated enemies leaves a readable pile, not hundreds of overlapping pixels.
+ if(ruinsXpDrops.length>40){for(let i=ruinsXpDrops.length-1,checked=0;i>=0&&checked<24;i--,checked++){
+  const g=ruinsXpDrops[i];if((g.x-x)**2+(g.y-y)**2<34*34){g.value+=value;g.life=120;return}
+ }}
  const scatter=ruinsXpDrops.length%7;
- ruinsXpDrops.push({x:x+Math.cos(scatter*2.4)*11,y:y+Math.sin(scatter*2.4)*11,value,life:90,pull:0,seed:Math.random()*6.3});
+ ruinsXpDrops.push({x:x+Math.cos(scatter*2.4)*11,y:y+Math.sin(scatter*2.4)*11,value,life:130,pull:0,seed:Math.random()*6.3});
 }
 function updateRuinsXp(dt){
  if(selectedStage!=='ruins')return;
- const range=51*(1+up.magnet*.10+up.recruit*.025),vacuum=170*(1+up.magnet*.08);
+ const range=53*(1+up.magnet*.10+up.recruit*.025),vacuum=132*(1+up.magnet*.10);
  for(let i=ruinsXpDrops.length-1;i>=0;i--){
   const g=ruinsXpDrops[i];g.life-=dt;
   const dx=player.x-g.x,dy=player.y-g.y,dist=Math.hypot(dx,dy);
@@ -462,26 +525,33 @@ function drawRuinsXp(){
   ctx.save();ctx.shadowColor='#5abffc';ctx.shadowBlur=5;ctx.globalAlpha=.94;ctx.drawImage(im,x-size/2,y-size/2+bob,size,size);ctx.restore();
  }
 }
-const ruinsWavePlans=[
- {kind:'siege',units:['zealot','ghoul'],count:11},
- {kind:'pincer',units:['zealot','archer','ghoul'],count:14},
- {kind:'rush',units:['ghoul','nameless_reptile'],count:15},
- {kind:'spear',units:['nameless_reptile','fanatic','priest'],count:13},
- {kind:'pincer',units:['nameless_reptile','migo','archer'],count:16},
- {kind:'siege',units:['nameless_reptile','migo','priest'],count:18}
+// Readable 5-minute rhythm: probing -> flanks -> breach -> mixed pressure -> cathartic horde.
+const ruinsWavePhases=[
+ {seconds:0,units:['zealot','ghoul'],count:11,pace:10.8},
+ {seconds:47,units:['zealot','ghoul','fanatic'],count:18,pace:10.2},
+ {seconds:104,units:['ghoul','zealot','archer','nameless_reptile'],count:25,pace:10.6},
+ {seconds:166,units:['ghoul','fanatic','bulwark','priest'],count:27,pace:11.0},
+ {seconds:229,units:['zealot','ghoul','fanatic','nameless_reptile'],count:38,pace:10.7}
 ];
+function ruinsWavePhase(){let phase=0;for(let i=0;i<ruinsWavePhases.length;i++)if(time>=ruinsWavePhases[i].seconds)phase=i;return phase}
 function spawnRuinsWave(dt){
  if(selectedStage!=='ruins'||game!=='play'||gameMode==='expedition'&&(regionIndex>=COMBAT_ROOMS||expeditionHallway||!roomRewardsOpen()))return;
  ruinsWaveTimer-=dt;if(ruinsWaveTimer>0)return;
- const index=gameMode==='expedition'?regionIndex:Math.min(5,Math.floor(time/260));
- const plan=ruinsWavePlans[index],maxSpawn=Math.min(26,plan.count+Math.min(4,ruinsWaveCount%5));
- const base=ruinsWaveCount++%4,edgeDirections=[[-1,0],[1,0],[0,-1],[0,1]];
- for(let i=0;i<maxSpawn&&enemies.length<157;i++){
-  const edge=plan.kind==='pincer'?(i%2?base:(base+2)%4):plan.kind==='siege'?(base+i%4)%4:base;
-  const [dx,dy]=edgeDirections[edge];const from={x:camera.x+dx*(W/2+240),y:camera.y+dy*(H/2+240)};
-  spawnEnemy(false,plan.units[(i+ruinsWaveCount)%plan.units.length],from);
+ const phase=ruinsWavePhase(),plan=ruinsWavePhases[phase],pulse=ruinsWaveCount++;
+ // A brief lull gives the player space to collect dropped experience and reposition.
+ if(pulse%4===3){ruinsWaveTimer=5.2;return}
+ const directions=[[-1,0],[1,0],[0,-1],[0,1]],base=(Math.floor(pulse/4)+regionIndex)%4;
+ const count=Math.round(plan.count*(difficulty==='nightmare'?1.2:difficulty==='hard'?1.1:difficulty==='easy'?.85:1));
+ let spawned=0;
+ for(let i=0;i<count&&enemies.length<170;i++){
+  const edge=phase===0?base:phase===1?((i%2)?base:(base+2)%4):phase===2?((base+Math.floor(i/5))%4):phase===3?((base+Math.floor(i/9))%4):((base+Math.floor(i/7))%4);
+  const [dx,dy]=directions[edge];
+  const from={x:camera.x+dx*(W/2+215),y:camera.y+dy*(H/2+215)};
+  // Later waves deliberately mix weak fodder into champions to make area builds useful.
+  const kind=phase===4&&i%4!==0?(i%3===0?'ghoul':'zealot'):plan.units[(i+Math.floor(pulse/2))%plan.units.length];
+  if(spawnEnemy(false,kind,from))spawned++;
  }
- ruinsWaveTimer=(gameMode==='expedition'?12.5:14.5)*DIFFICULTIES[difficulty].enemyRate;
+ ruinsWaveTimer=plan.pace*DIFFICULTIES[difficulty].enemyRate;
 }
 
 const expeditionRoomEnemies={
@@ -965,6 +1035,7 @@ function followerEvoEligible(){const counts=followerCounts();return followerEvoD
 function refreshFollowerEvolutions(){followerEvoDirty=false}
 function selectFollowerEvolution(def){
  if(game!=='level'||!def||!followerEvoCanBuy(def))return false;
+ if(pilotTacticOffer())ruinsTacticChosen.add(level);
  const spent=[];
  for(const [role,n] of Object.entries(def.need)){
   const group=followers.filter(f=>!f.eliteForm&&f.role===role).slice(-n);
@@ -1455,7 +1526,7 @@ function puff(x,y,color,n=5){for(let i=0;i<n&&fx.length<180;i++){const life=rnd(
 function start(){if(total()!==POINTS)return;playSfx('ui_select');
  regionIndex=0;areaKills=0;aoeZones=[];bossFieldPulses=[];bossAoEClock=5.5;bossAddClock=6;bossAttackIndex=0;bossDash=null;bossDashCooldown=7.5;bossLeap=null;bossLeapCooldown=4.8;bossPhaseSeen=1;bossExposed=0;bossAoEDodged=true;bossHazards=[];bossBursts=[];expeditionGateToast=0;pendingExpeditionWin=false;buildExpeditionRooms();
  artifactItems=[];artifactDrops=[];artifactMods=Object.create(null);artifactSerial=0;artifactNoDrop=0;artifactPrompt=null;$('artifactOverlay').hidden=true;
- winTime=gameMode==='expedition'?Infinity:1800;player={x:0,y:0,r:13,hp:DIFFICULTIES[difficulty].initialHp+patronBonus('maxhp'),maxHp:DIFFICULTIES[difficulty].initialHp+patronBonus('maxhp'),speed:205,invuln:0};safeTime=8;damageSource='なし';damageCount=0;followers=[];enemies=[];civilians=[];bolts=[];enemyShots=[];fx=[];hitMarks=[];bossSpawned=false;bossDefeated=false;boss=null;seenTypes=new Set();threatPhase=0;up=Object.fromEntries(upgradeDefs.filter(d=>!d.type).map(d=>[d.key,0]));evolvedCommon=Object.fromEntries(commonEvolutions.map(d=>[d.key,false]));instantLevels={reinforce:0,raider:0,guardian:0,hunter:0};echoHitCounter=0;retaliateCooldown=0;for(const k of Object.keys(myth)){myth[k]=0;evolved[k]=false;mythClock[k]=0}patronArtPulses=0;patronWardTime=0;patronWardStrength=0;wardCharges=0;wardRegen=0;sigils=[];rays=[];waves=[];relics=[];effectParticles.length=0;nextElite=0;ruinsXpDrops=[];ruinsWaveTimer=8;ruinsWaveCount=0;rerolls=3;lastChosen=null;roleWeight={raider:3,guardian:3,hunter:2};followerId=0;followerEvoRanks=Object.create(null);followerEvoDirty=true;totalDeserted=0;time=0;kills=0;level=1;xp=0;nextXp=11;spawnTimer=0;civilTimer=0;hudTimer=0;enemyId=0;boost=10;boostState='idle';boostTime=0;boostKills=0;boostGoal=0;betrayTime=0;boostFlash=0;boostProgress=0;boostPulseClock=0;boostPulseCount=0;boostDecoys=[];camera={x:0,y:0};for(let i=0;i<6+patronBonus('followers');i++)makeFollower();for(let i=0;i<16;i++)spawnCivil(true);for(let i=0;i<3;i++)spawnEnemy(true);game='play';updateArtifactButton();progress.runs++;saveProgress();paused=false;playBgm(stageMusicId());$('panel').style.display='none';$('levelpanel').style.display='none';$('error').style.display='none';playerCast=0;playerFacing=1;toast(`${DIFFICULTIES[difficulty].name}：${stageDefs[selectedStage].name}へ進軍！`)}
+ winTime=gameMode==='expedition'?Infinity:1800;player={x:0,y:0,r:13,hp:DIFFICULTIES[difficulty].initialHp+patronBonus('maxhp'),maxHp:DIFFICULTIES[difficulty].initialHp+patronBonus('maxhp'),speed:205,invuln:0};safeTime=8;damageSource='なし';damageCount=0;followers=[];enemies=[];civilians=[];bolts=[];enemyShots=[];fx=[];hitMarks=[];bossSpawned=false;bossDefeated=false;boss=null;seenTypes=new Set();threatPhase=0;up=Object.fromEntries(upgradeDefs.filter(d=>!d.type).map(d=>[d.key,0]));evolvedCommon=Object.fromEntries(commonEvolutions.map(d=>[d.key,false]));instantLevels={reinforce:0,raider:0,guardian:0,hunter:0};echoHitCounter=0;retaliateCooldown=0;for(const k of Object.keys(myth)){myth[k]=0;evolved[k]=false;mythClock[k]=0}patronArtPulses=0;patronWardTime=0;patronWardStrength=0;wardCharges=0;wardRegen=0;sigils=[];rays=[];waves=[];relics=[];effectParticles.length=0;nextElite=0;ruinsXpDrops=[];ruinsWaveTimer=6;ruinsWaveCount=0;ruinsTacticRanks={raider:0,guardian:0,hunter:0};ruinsTacticChosen=new Set();ruinsTacticClock={raider:0,guardian:0,hunter:0};rerolls=3;lastChosen=null;roleWeight={raider:3,guardian:3,hunter:2};followerId=0;followerEvoRanks=Object.create(null);followerEvoDirty=true;totalDeserted=0;time=0;kills=0;level=1;xp=0;nextXp=11;spawnTimer=0;civilTimer=0;hudTimer=0;enemyId=0;boost=10;boostState='idle';boostTime=0;boostKills=0;boostGoal=0;betrayTime=0;boostFlash=0;boostProgress=0;boostPulseClock=0;boostPulseCount=0;boostDecoys=[];camera={x:0,y:0};for(let i=0;i<6+patronBonus('followers');i++)makeFollower();for(let i=0;i<16;i++)spawnCivil(true);for(let i=0;i<3;i++)spawnEnemy(true);game='play';updateArtifactButton();progress.runs++;saveProgress();paused=false;playBgm(stageMusicId());$('panel').style.display='none';$('levelpanel').style.display='none';$('error').style.display='none';playerCast=0;playerFacing=1;toast(`${DIFFICULTIES[difficulty].name}：${stageDefs[selectedStage].name}へ進軍！`)}
 
 // v3.9.6: the same settings and event handlers, now grouped in readable setup steps.
 function enhanceSetupLayout(){
@@ -1708,6 +1779,8 @@ function renderEffectChange(previous,after,showDifference){
  return frag;
 }
 function renderLevelCards(){
+ if(pilotTacticOffer()){renderPilotTacticCards();return}
+ for(const id of ['reroll','skipReward']){const el=$(id);if(el)el.hidden=false}
  const cards=$('cards');cards.replaceChildren();
  const ownedNormal=upgradeDefs.filter(d=>!d.type&&upgradeLevel(d)>0&&upgradeLevel(d)<d.max).map(def=>({type:'ordinary',def}));
  const ownedMyth=mythSkills.filter(d=>(!d.patronOnly||d.patronOnly===patron)&&myth[d.key]>0&&myth[d.key]<d.max).map(def=>({type:'myth',def}));
@@ -2173,7 +2246,7 @@ function tickBossEncounter(dt){
 }
 function step(dt){time+=dt;if(gameMode==='survival'&&time>=winTime){finish(true,'survived');return}player.invuln=Math.max(0,player.invuln-dt);retaliateCooldown=Math.max(0,retaliateCooldown-dt);player.hp=Math.min(player.maxHp,player.hp+dt*(up.regeneration*.2+patronBonus('regen')+artifactStat('regen')+(evolvedCommon.bulwark_evo?.5:0)+(evolvedCommon.healing?.5:0))); safeTime=Math.max(0,safeTime-dt);boostFlash=Math.max(0,boostFlash-dt);toastTimer-=dt;if(toastTimer<=0)$('toast').style.opacity='0';
  playerCast=Math.max(0,playerCast-dt);let mx=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0),my=(keys.s||keys.arrowdown?1:0)-(keys.w||keys.arrowup?1:0);if(pointer){let dx=pointer.touch?pointer.x-pointer.originX:pointer.x-W/2,dy=pointer.touch?pointer.y-pointer.originY:pointer.y-H/2;if(Math.hypot(dx,dy)>(pointer.touch?11:20)){mx=dx;my=dy}}let ml=Math.hypot(mx,my);playerMoving=!!ml;if(Math.abs(mx)>.1)playerFacing=mx>=0?1:-1;if(ml){const v=player.speed*(1+up.speed*.05+patronBonus('speed')+artifactStat('move')/100+(evolvedCommon.gale?.12:0))*slowTerrain(player.x,player.y)*dt;moveTerrain(player,mx/ml*v,my/ml*v,player.r)}expeditionAdvance(dt);camera.x+=(player.x-camera.x)*Math.min(1,dt*7);camera.y+=(player.y-camera.y)*Math.min(1,dt*7);
- spawnTimer-=dt;civilTimer-=dt;
+ spawnTimer-=dt;civilTimer-=dt;tickPilotTactics(dt);
  if((gameMode==='survival'&&time>=1620||gameMode==='expedition'&&regionIndex===COMBAT_ROOMS)&&!bossSpawned)spawnRival();
  if(gameMode==='survival'&&nextElite<eliteSchedule.length&&time>=eliteSchedule[nextElite]){nextElite++;spawnElite()}
  if(gameMode==='expedition'&&!expeditionHallway&&[1,3,5].includes(regionIndex)&&!eliteRoomSpawned.has(regionIndex)&&player.x>expeditionRooms[regionIndex].left+160){
@@ -2305,7 +2378,7 @@ function step(dt){time+=dt;if(gameMode==='survival'&&time>=winTime){finish(true,
       if(f.role==='guardian')dmg*=.75;
       if(boostState==='active')dmg*=boostFactor();
       if(formDef)dmg*=formDef.mult*(selectedStage==='ruins'?1.7:1);
-      playSfx(f.role==='raider'?'raider_attack':f.role==='guardian'?'guardian_attack':'hunter_attack');damageEnemy(target,dmg,'follower');
+      playSfx(f.role==='raider'?'raider_attack':f.role==='guardian'?'guardian_attack':'hunter_attack');damageEnemy(target,dmg,'follower');pilotTacticStrike(f,target,dmg);
        if(f.eliteForm==='vanguard')target.slow=Math.max(target.slow||0,1.2);
        if(f.eliteForm){
         f.eliteHits=(f.eliteHits||0)+1;
