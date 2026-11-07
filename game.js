@@ -124,7 +124,7 @@ const DIFFICULTIES={
  nightmare:{name:'ナイトメア',enemyHp:1.85,enemyDamage:1.60,enemyRate:0.70,bossHp:2.30,initialHp:90}
 };
 const SAVE_KEY='maremon-survivors-v29-progress';
-const BUILD_VERSION='v406';
+const BUILD_VERSION='v407';
 function newProgress(){return{kills:0,runs:0,wins:0,normalWins:0,hardWins:0,nightmareWins:0,survivalWins:0,bestLevel:1,maxFollowers:0,boostSuccess:0,eliteKills:0,relics:0,evolutions:0,enemyKills:{},stageEnemyKills:{},patronBoosts:{},achievements:[],clears:{},difficultySelections:{}}}
 function loadProgress(){try{const p=JSON.parse(localStorage.getItem(SAVE_KEY)||'null');return p&&typeof p==='object'?Object.assign(newProgress(),p):newProgress()}catch(e){return newProgress()}}
 let progress=loadProgress(),difficulty='normal';for(const field of ['enemyKills','stageEnemyKills','patronBoosts','difficultySelections','clears'])if(!progress[field]||typeof progress[field]!=='object'||Array.isArray(progress[field]))progress[field]={};
@@ -475,10 +475,10 @@ function spawnRuinsWave(dt){
  ruinsWaveTimer-=dt;if(ruinsWaveTimer>0)return;
  const index=gameMode==='expedition'?regionIndex:Math.min(5,Math.floor(time/260));
  const plan=ruinsWavePlans[index],maxSpawn=Math.min(26,plan.count+Math.min(4,ruinsWaveCount%5));
- const base=Math.floor(ruinsWaveCount++%4),side=side=>[[-1,0],[1,0],[0,-1],[0,1]][side];
+ const base=ruinsWaveCount++%4,edgeDirections=[[-1,0],[1,0],[0,-1],[0,1]];
  for(let i=0;i<maxSpawn&&enemies.length<157;i++){
-  const edge=plan.kind==='pincer'?(i%2?base:(base+2)%4):plan.kind==='siege'?(base+i%4):base;
-  const [dx,dy]=side(edge);const from={x:camera.x+dx*(W/2+240),y:camera.y+dy*(H/2+240)};
+  const edge=plan.kind==='pincer'?(i%2?base:(base+2)%4):plan.kind==='siege'?(base+i%4)%4:base;
+  const [dx,dy]=edgeDirections[edge];const from={x:camera.x+dx*(W/2+240),y:camera.y+dy*(H/2+240)};
   spawnEnemy(false,plan.units[(i+ruinsWaveCount)%plan.units.length],from);
  }
  ruinsWaveTimer=(gameMode==='expedition'?12.5:14.5)*DIFFICULTIES[difficulty].enemyRate;
